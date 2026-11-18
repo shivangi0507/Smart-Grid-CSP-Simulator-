@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Smart Grid CSP Simulator + Kalman Filter</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--tx:#1b2430;--mut:#6b7686;--bd:#dde2ea;--g:#2e9d5b;--y:#e0a200;--r:#d6453d;--b:#2f6fd6;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#12161c;--card:#1b222b;--tx:#e8edf3;--mut:#93a0b2;--bd:#2d3744;--g:#4cc783;--y:#f0bd3a;--r:#f0645c;--b:#6ea3f5}}
+*{box-sizing:border-box}body{margin:0 auto;background:var(--bg);color:var(--tx);font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;padding:14px;max-width:1100px}
+h1{font-size:20px;margin:0 0 2px}.sub{color:var(--mut);font-size:13px;margin-bottom:12px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:12px}
+.row{display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-bottom:12px}.row label{font-size:12px;color:var(--mut);display:block}
+button,select{font:inherit;background:var(--card);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:6px 12px;cursor:pointer}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin-bottom:12px}
+.k{font-size:12px;color:var(--mut)}.v{font-size:22px;font-weight:650}.u{font-size:12px;color:var(--mut)}
+.bar{height:8px;background:var(--bd);border-radius:6px;overflow:hidden;margin-top:6px}.bar i{display:block;height:100%;background:var(--g);width:0}
+canvas{width:100%;height:180px;display:block}
+.houses{display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:8px;margin-top:8px}
+.h{border:2px solid var(--g);border-radius:10px;text-align:center;padding:5px 0;font-size:11px;color:var(--mut)}.h b{display:block;font-size:24px;line-height:1.1}
+.h.bat{border-color:var(--y)}.h.gas{border-color:var(--r)}.h.off{border-color:var(--bd);opacity:.45}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}@media(max-width:760px){.two{grid-template-columns:1fr}}
+.sm{font-size:12.5px;color:var(--mut)}.sm b{color:var(--tx)}.sm ul{margin:4px 0 8px;padding-left:18px}
+#log{max-height:170px;overflow:auto}#log div{padding:2px 0;border-bottom:1px solid var(--bd)}
+code{font-size:12px}
+</style></head><body>
+<h1>⚡ Smart Grid CSP Simulator + Kalman Filter</h1>
+<div class="sub">Every 10 simulated minutes the agent reads noisy sensors, cleans them with Kalman filters, builds a Constraint Satisfaction Problem, solves it with backtracking + forward checking, and picks the best valid solution.</div>
+
+<div class="card row">
+ <div><label>Houses</label><button id="minus">−</button> <b id="nh" style="margin:0 6px">12</b> <button id="plus">+</button></div>
+ <div><label>Weather</label><select id="wx"><option value="sunny">☀️ Sunny</option><option value="cloudy">☁️ Cloudy</option><option value="windy">🌬️ Windy</option><option value="storm">⛈️ Storm</option><option value="heat">🥵 Heatwave</option><option value="cold">🥶 Cold snap</option></select></div>
+ <div><label>Speed</label><select id="sp"><option value="700">Slow</option><option value="350" selected>Normal</option><option value="120">Fast</option></select></div>
+ <div><label>Sensing</label><select id="sn"><option value="kalman" selected>Kalman filter</option><option value="raw">Raw sensors</option></select></div>
+ <div><button id="pp">⏸ Pause</button> <button id="rs">↺ Reset</button></div>
+</div>
+
+<div class="grid">
+ <div class="card"><div class="k">Time</div><div class="v" id="clk">06:00</div><div class="u" id="tmp"></div></div>
+ <div class="card"><div class="k">Price now</div><div class="v" id="pr">$0.12</div><div class="u" id="prn"></div></div>
+ <div class="card"><div class="k">Demand</div><div class="v" id="dm">0</div><div class="u" id="rn"></div></div>
+ <div class="card"><div class="k">Battery</div><div class="v" id="bt">50%</div><div class="bar"><i id="btb"></i></div><div class="u" id="bcy"></div></div>
+ <div class="card"><div class="k">Frequency</div><div class="v" id="fq">60.00</div><div class="u">Hz · band 59.95–60.05</div></div>
+ <div class="card"><div class="k">Renewable output (agent sees)</div><div class="v" id="re">0</div><div class="u" id="rem"></div></div>
+ <div class="card"><div class="k">Battery charge (agent sees)</div><div class="v" id="se">50%</div><div class="u" id="sem"></div></div>
+ <div class="card"><div class="k">Fossil fuel saved</div><div class="v" id="fs">0</div><div class="u" id="co"></div></div>
+ <div class="card"><div class="k">Money saved vs gas-only</div><div class="v" id="ms">$0</div><div class="u" id="bill"></div></div>
+</div>
+
+<div class="card" style="margin-bottom:12px"><div class="leg sm"><span style="color:var(--r)">■ Demand</span> <span style="color:var(--g)">■ Solar+Wind</span> <span style="color:var(--y)">■ Gas</span> <span style="color:var(--b)">■ Price</span> <span>┄ noisy renewable meter</span></div><canvas id="cv" width="900" height="180"></canvas></div>
+
+<div class="two">
+ <div class="card sm"><div class="k">The CSP the agent solves every tick</div>
+  <b>Variables</b> (what we decide): <code>K</code> blackout level, <code>G</code> gas level, <code>P</code> price, <code>B</code> battery command.
+  <br><b>Domains</b> (what we can choose): K∈{0..4} (×4% of load) · G∈{0..6} (gas steps) · P∈{$0.10 … $0.40, 9 steps} · B∈{−4..+4} (− discharge, + charge).
+  <br><b>Constraints</b> (which choices are allowed):
+  <ul>
+   <li><b>Unary:</b> P ≤ regulatory cap ($0.40, or $0.26 in extreme heat/cold) · battery energy within 10–100% · no charge↔discharge flip within 3 steps · K=0 in extreme weather (human safety)</li>
+   <li><b>Binary:</b> no charging battery with gas (G,B) · blackout only after gas is maxed (K,G) · blackout only after price is at cap (K,P)</li>
+   <li><b>Higher-order</b> over (K,G,P,B): frequency band (deficit ≤ 4%) · no wasted gas, battery or blackout</li>
+  </ul>
+  <b>Solver:</b> backtracking, smallest-domain-first variable order, forward checking with domain wipe-out (DWO) detection. All solutions are collected, then the one with the best utility is chosen: renewable used − gas − blackout − battery wear − price surge.</div>
+ <div class="card sm"><div class="k">Live solver trace</div><div id="tr">waiting for first tick…</div><div class="k" style="margin-top:8px">Agent decisions</div><div id="log"></div></div>
+</div>
+
+<div class="card"><div class="k">Neighbourhood · green = renewable, amber = battery, red = gas, dim = rolling blackout (🏥 vulnerable homes are never cut)</div><div class="houses" id="hs"></div></div>
+
+<script>
+const $=id=>document.getElementById(id),cl=(x,a,b)=>Math.max(a,Math.min(b,x));
+const WX={sunny:{sun:1,wind:.25,t:8,n:'Clear skies'},cloudy:{sun:.3,wind:.4,t:0,n:'Overcast'},windy:{sun:.7,wind:1,t:-2,n:'Strong wind'},storm:{sun:.1,wind:.7,t:-4,n:'Storm'},heat:{sun:1,wind:.15,t:19,n:'Heatwave'},cold:{sun:.5,wind:.35,t:-16,n:'Cold snap'}};
+const BASE=.12,GAS_P=.30,DT=1/6,CO2=.45,MINSOC=.1,PL=[.10,.12,.15,.18,.22,.26,.30,.35,.40];
+const fmt=h=>String(Math.floor(h%24)).padStart(2,'0')+':'+String(Math.round((h%1)*60)).padStart(2,'0');
+let S;
+function reset(k){S={n:k?S.n:12,h:6,soc:.5,dir:0,since:9,cycles:0,price:BASE,gasK:0,saved:0,money:0,bill:0,hist:[],log:[],cloud:1,gust:1,rot:0,last:null,relax:0,key:'',kf:{x:null,P:null},ks:{x:.5,p:1e-3},u:0}}
+reset();
+function addLog(m){S.log.unshift(fmt(S.h)+' '+m);S.log=S.log.slice(0,30);$('log').innerHTML=S.log.map(x=>`<div>${x}</div>`).join('')}
+
+
+// ---- Kalman filters (sensor noise, tuned the same way as the Python version)
+const REN_NOISE=.10,SOC_NOISE=.03,EFF=.95,QL=.005,QT=1e-4,QS=1e-5,RISK=1;
+const gauss=()=>Math.sqrt(-2*Math.log(1-Math.random()))*Math.cos(2*Math.PI*Math.random());
+// 2-state (level, trend) filter for renewable output per house; multiplicative sensor noise
+function kfRen(z){const K=S.kf;
+ if(!K.x){const r0=(REN_NOISE*Math.max(z,.05))**2;K.x=[z,0];K.P=[[r0,0],[0,.05]];return z}
+ let [[a,b],[c,d]]=K.P;K.x=[K.x[0]+K.x[1],K.x[1]];K.P=[[a+b+c+d+QL,b+d],[c+d,d+QT]];
+ [[a,b],[c,d]]=K.P;const r=(REN_NOISE*Math.max(K.x[0],.05))**2,s=a+r,k0=a/s,k1=c/s,y=z-K.x[0];
+ K.x=[K.x[0]+k0*y,K.x[1]+k1*y];K.P=[[(1-k0)*a,(1-k0)*b],[c-k1*a,d-k1*b]];return Math.max(0,K.x[0])}
+// 1-state filter for battery SoC: predict with the agent's own command, update with the noisy meter
+function kfSoc(z,u){const k=S.ks;k.x+=u;k.p+=QS;const g=k.p/(k.p+SOC_NOISE**2);k.x+=g*(z-k.x);k.p*=1-g;return cl(k.x,0,1)}
+
+// Backtracking search with forward checking (Lecture 11). cons: {s:[scope], f:assignment->bool}
+function solveCSP(doms,cons){
+ const st={nodes:0,bt:0,dwo:0,sols:[]},names=Object.keys(doms);
+ (function bt(cur,asg){
+  const un=names.filter(v=>!(v in asg));
+  if(!un.length){st.sols.push({...asg});return}
+  un.sort((a,b)=>cur[a].length-cur[b].length);           // smallest domain first
+  const v=un[0];
+  for(const d of cur[v]){
+   st.nodes++;asg[v]=d;const nxt={...cur};let wipe=false;
+   for(const c of cons){
+    if(!c.s.includes(v))continue;
+    const free=c.s.filter(x=>!(x in asg));
+    if(!free.length){if(!c.f(asg)){wipe=true;break}}
+    else if(free.length===1){const x=free[0];                // forward check: prune X
+     nxt[x]=nxt[x].filter(y=>{asg[x]=y;const ok=c.f(asg);delete asg[x];return ok});
+     if(!nxt[x].length){wipe=true;st.dwo++;break}}
+   }
+   if(wipe)st.bt++;else bt(nxt,asg);
+   delete asg[v];
+  }
+ })(doms,{});
+ return st;
+}
+
+function step(){
+ const n=S.n,w=WX[$('wx').value],h=S.h%24;
+ S.cloud=cl(S.cloud+(Math.random()-.5)*.25,.55,1);S.gust=cl(S.gust+(Math.random()-.5)*.3,.5,1.3);   // hidden weather drift
+ const temp=w.t+14+6*Math.sin(Math.PI*(h-9)/12)+(w.t>10?6:0);
+ const solar=n*2.2*Math.max(0,Math.sin(Math.PI*(h-6)/12))*w.sun*(w.sun<.5?1:S.cloud),wind=n*w.wind*S.gust,ren=solar+wind;
+ const zr=Math.max(0,ren*(1+gauss()*REN_NOISE)),zs=S.soc+gauss()*SOC_NOISE;                            // noisy sensor readings
+ const kr=n*kfRen(zr/n),ksoc=kfSoc(zs,S.u),useK=$('sn').value==='kalman';                          // filters always run, so switching is smooth
+ const renHat=useK?kr:zr,socH=useK?ksoc:cl(zs,0,1);
+ const sigma=useK?n*Math.sqrt(S.kf.P[0][0]):REN_NOISE*zr,margin=useK?2*Math.sqrt(S.ks.p+QS):2*SOC_NOISE;
+ const obs=Math.max(0,renHat-RISK*sigma);                                                           // plan against the pessimistic value
+ const peak=Math.exp(-((h-8)**2)/4)+1.3*Math.exp(-((h-19.5)**2)/5);
+ const base=.35+.45*peak,flex=Math.max(0,temp-26)*.09+Math.max(0,12-temp)*.07+((h>=18&&h<24)?.5:0);
+ const dem=P=>n*(base+flex*(1-cl((P-.15)/.25,0,1)*.65));                                            // model: how homes react to price P
+ const extreme=temp>34||temp<2,cap=extreme?.26:.40,capK=n*6,stepB=n*.4,stepG=n*1.4/6;
+ const sv=a=>dem(a.P)*(1-.04*a.K),im=a=>obs+a.G*stepG-a.B*stepB-sv(a);
+ function attempt(relax){
+  const tol=relax?.08:.04,m=a=>tol*sv(a);
+  const cons=[
+   {s:['P'],f:a=>a.P<=cap},
+   {s:['B'],f:a=>a.B>0?a.B*stepB*DT<=(1-socH)*capK:a.B<0?-a.B*stepB*DT<=(socH-MINSOC-margin)*capK:true},
+   {s:['B'],f:a=>!(S.dir&&S.since<3)||Math.sign(a.B)!==-S.dir},
+   {s:['K'],f:a=>relax||!extreme||a.K===0},
+   {s:['G','B'],f:a=>!(a.G>0&&a.B>0)},
+   {s:['K','G'],f:a=>a.K===0||a.G===6},
+   {s:['K','P'],f:a=>a.K===0||a.P===cap},
+   {s:['K','G','P','B'],f:a=>im(a)>=-m(a)},
+   {s:['K','G','P','B'],f:a=>{const i=im(a);return(a.G===0||i-stepG<-m(a))&&(a.B>=0||i-stepB<-m(a))&&(a.K===0||i-.04*dem(a.P)<-m(a))}}];
+  const bStar=cl(Math.round((obs-dem(S.price))/stepB),-4,4);
+  const doms={K:[0,1,2,3,4],G:[0,1,2,3,4,5,6],P:PL.slice(),B:[-4,-3,-2,-1,0,1,2,3,4].sort((a,b)=>Math.abs(a-bStar)-Math.abs(b-bStar))};
+  const pre={};for(const v in doms)pre[v]=doms[v].length;
+  for(const c of cons)if(c.s.length===1){const v=c.s[0];doms[v]=doms[v].filter(d=>c.f({[v]:d}))}   // unary constraints prune domains first
+  const post={};for(const v in doms)post[v]=doms[v].length;
+  const st=solveCSP(doms,cons.filter(c=>c.s.length>1));
+  return{st,pre,post,relax};
+ }
+ let r=attempt(false);if(!r.st.sols.length){S.relax++;r=attempt(true)}
+ const U=a=>{const i=im(a),s=sv(a);return(obs-Math.max(0,i))-3*a.G*stepG-8*(dem(a.P)-s)-.3*Math.abs(a.B)*stepB-.4*s*(a.P-BASE)/.28};
+ let best=r.st.sols.length?r.st.sols.reduce((x,y)=>U(y)>U(x)?y:x):{K:4,G:6,P:cap,B:0};
+ const Bk=best.B*stepB,gas=best.G*stepG;S.socPrev=S.soc;
+ const dA=dem(best.P)*(1+(Math.random()-.5)*.03),served=dA*(1-.04*best.K),black=dA*.04*best.K;
+ const imb=ren+gas-Bk-served,freq=cl(60+1.25*imb/served,59.9,60.1);
+ S.soc=cl(S.soc+Bk*(Bk>0?EFF:1/EFF)*DT/capK,0,1);S.u=Bk*DT/capK;S.price=best.P;       // real battery has losses the agent does not model
+ 
+ const sg=Math.sign(best.B);if(sg&&sg!==S.dir){if(S.dir)S.cycles++;S.dir=sg;S.since=0}else S.since++;
+ S.gasK+=gas*DT;S.saved+=Math.max(0,served-gas)*DT;S.money+=served*DT*(GAS_P-best.P);S.bill+=served*DT*best.P;
+ const key=[best.K,best.G,best.P,Math.sign(best.B)].join();
+ if(key!==S.key){S.key=key;addLog(`${r.st.sols.length} valid solutions → price $${best.P.toFixed(2)}, gas ${gas.toFixed(0)} kW, battery ${Bk>0?'charge':Bk<0?'discharge':'idle'}${best.K?', ⚠ blackout':''}`)}
+ if(r.relax&&!S.lr)addLog('CSP unsatisfiable → relaxed frequency band to 8%');S.lr=r.relax;
+ S.last={temp,demand:dA,ren,solar,wind,gas,bat:Math.max(0,-Bk),black,freq,r,best,w,cap,zr,renHat,sigma,zs,socH,socTrue:S.socPrev};
+ S.hist.push({d:dA,r:ren,g:gas,p:S.price,m:zr});if(S.hist.length>144)S.hist.shift();
+ S.h+=DT;S.rot++;render();
+}
+
+function render(){
+ const L=S.last;if(!L)return;
+ $('clk').textContent=fmt(S.h);$('tmp').textContent=`${L.temp.toFixed(0)}°C · ${L.w.n}`;
+ $('pr').textContent='$'+S.price.toFixed(2);$('pr').style.color=S.price>.25?'var(--r)':S.price>.16?'var(--y)':'var(--g)';
+ $('prn').textContent=`cap $${L.cap.toFixed(2)}`+(L.cap<.4?' (safety limit)':'');
+ $('dm').textContent=L.demand.toFixed(1)+' kW';$('rn').textContent=`${L.ren.toFixed(1)} kW renewable`;
+ $('bt').textContent=(S.soc*100).toFixed(0)+'%';$('btb').style.width=S.soc*100+'%';$('bcy').textContent=`${S.cycles} direction switches`;
+ $('fq').textContent=L.freq.toFixed(2);$('fq').style.color=Math.abs(L.freq-60)>.05?'var(--r)':'var(--g)';
+ $('re').textContent=L.renHat.toFixed(1)+' kW';$('rem').textContent=`meter ${L.zr.toFixed(1)} · true ${L.ren.toFixed(1)} · ±${L.sigma.toFixed(1)} (1σ)`;
+ $('se').textContent=(L.socH*100).toFixed(1)+'%';$('sem').textContent=`meter ${(L.zs*100).toFixed(1)}% · true ${(L.socTrue*100).toFixed(1)}%`;
+ $('fs').textContent=S.saved.toFixed(0)+' kWh';$('co').textContent=`≈ ${(S.saved*CO2).toFixed(0)} kg CO₂ avoided`;
+ $('ms').textContent='$'+S.money.toFixed(0);$('bill').textContent=`city bill so far $${S.bill.toFixed(0)}`;
+ const t=L.r,sz=o=>`K${o.K} G${o.G} P${o.P} B${o.B}`;
+ $('tr').innerHTML=`Domain sizes before → after unary pruning: <b>${sz(t.pre)} → ${sz(t.post)}</b><br>Nodes tried <b>${t.st.nodes}</b> · backtracks <b>${t.st.bt}</b> · domain wipe-outs <b>${t.st.dwo}</b> · solutions <b>${t.st.sols.length}</b>${t.relax?' · <b style="color:var(--r)">relaxed</b>':''}<br>Chosen: K=${L.best.K} G=${L.best.G} P=$${L.best.P.toFixed(2)} B=${L.best.B} · unsatisfiable ticks so far: ${S.relax}`;
+ const n=S.n,per=L.demand/n,cut=Math.ceil(n*(L.black/Math.max(.1,L.demand)));let html='';
+ for(let i=0;i<n;i++){const vul=i%4===3;let c='h';
+  if(L.black>0&&!vul&&((i+S.rot)%n)<cut)c+=' off';else if(L.gas>.3&&L.gas>=L.bat)c+=' gas';else if(L.bat>.3)c+=' bat';
+  html+=`<div class="${c}"><b>${vul?'🏥':'🏠'}</b>${(per*(.8+((i*7)%5)*.1)).toFixed(1)} kW</div>`}
+ $('hs').innerHTML=html;draw();
+}
+function draw(){
+ const c=$('cv'),x=c.getContext('2d'),W=c.width,H=c.height,cs=getComputedStyle(document.documentElement),hs=S.hist;
+ x.clearRect(0,0,W,H);if(hs.length<2)return;const mx=Math.max(5,...hs.map(a=>Math.max(a.d,a.r,a.g)))*1.1;
+ const line=(f,col,sc,w)=>{x.beginPath();x.strokeStyle=cs.getPropertyValue(col).trim();x.lineWidth=w||2;hs.forEach((a,i)=>{const px=i/143*W,py=H-6-f(a)/sc*(H-14);i?x.lineTo(px,py):x.moveTo(px,py)});x.stroke()};
+ line(a=>a.m,'--mut',mx,1);line(a=>a.r,'--g',mx);line(a=>a.d,'--r',mx);line(a=>a.g,'--y',mx);line(a=>a.p,'--b',.45,1.5);
+}
+let timer;const run=()=>{clearInterval(timer);timer=setInterval(step,+$('sp').value)};
+$('plus').onclick=()=>{S.n=Math.min(60,S.n+2);$('nh').textContent=S.n};
+$('minus').onclick=()=>{S.n=Math.max(2,S.n-2);$('nh').textContent=S.n};
+$('sp').onchange=run;
+$('pp').onclick=()=>{if(timer){clearInterval(timer);timer=null;$('pp').textContent='▶ Play'}else{run();$('pp').textContent='⏸ Pause'}};
+$('rs').onclick=()=>{reset(true);$('log').innerHTML='';run();$('pp').textContent='⏸ Pause'};
+$('wx').onchange=()=>addLog('weather changed: '+WX[$('wx').value].n);
+$('sn').onchange=()=>addLog('sensing mode: '+($('sn').value==='kalman'?'Kalman filter':'raw sensors'));
+addLog('agent online: Kalman filters + CSP every tick');run();
+</script></body></html>
